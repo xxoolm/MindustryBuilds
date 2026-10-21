@@ -11,39 +11,75 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v2
-    - name: Set up JDK 16
-      uses: actions/setup-java@v1
+    - uses: actions/checkout@v7
+    - name: Set up JDK 25
+      uses: actions/setup-java@v6
       with:
-        java-version: 16
+        distribution: temurin
+        java-version: 25
     - name: Set env
       run: echo "RELEASE_VERSION=${GITHUB_REF#refs/*/}" >> $GITHUB_ENV
     - name: Set up keystore
       run: |
         echo "${{ secrets.KEYSTORE_BASE64 }}" > keystore.txt
         base64 --decode keystore.txt > bekeystore.jks
+    - name: Fetch JRE for Steam deployment
+      run: |
+        echo $HOME
+        mkdir ~/jdks
+        cd ~/jdks
+        wget https://github.com/Anuken/MindustryJreBuilds/releases/download/v4/jre-linux64.zip
+        wget https://github.com/Anuken/MindustryJreBuilds/releases/download/v4/jre-windows64.zip
+        wget https://github.com/Anuken/MindustryJreBuilds/releases/download/v4/jre-macos.zip
+        wget https://github.com/Anuken/MindustryJreBuilds/releases/download/v4/packr.jar
+        unzip jre-linux64.zip
+        unzip jre-windows64.zip
+        unzip jre-macos.zip
+        ls
     - name: Create artifacts
       env:
         keystore_password: ${{ secrets.KEYSTORE_PASSWORD_SECRET }}
         keystore_alias_password: ${{ secrets.KEYSTORE_PASSWORD_SECRET }}
         keystore_alias: frog
+        JDK_DIR: /home/runner/jdks/
       run: |
-        git clone --depth=1 --branch=master https://github.com/Anuken/Mindustry
+        git clone --depth=1 --branch=v9 https://github.com/Anuken/Mindustry
         cd Mindustry
-        sed -i 's/applicationId "io.anuke.mindustry"/applicationId "io.anuke.mindustry.be"/g' android/build.gradle
+        echo "BODY=$(git rev-parse HEAD)" >> $GITHUB_ENV
+        sed -i 's/applicationId "io.anuke.mindustry"/applicationId "io.anuke.mindustry.be"/g' android/build.gradle.kts
         sed -i 's/"io.anuke.mindustry"/"io.anuke.mindustry.be"/g' android/AndroidManifest.xml
         sed -i 's/Mindustry/Mindustry BE/g' android/res/values/strings.xml
         ./gradlew pack
-        ./gradlew desktop:dist server:dist android:assembleRelease -Pbuildversion=${RELEASE_VERSION} -PversionType=bleeding-edge --stacktrace
+        ./gradlew desktop:dist server:dist core:depsJar core:assetsJar android:assembleRelease -Pbuildversion=${RELEASE_VERSION} -PversionType=bleeding-edge -PshowCommitHash --stacktrace
         mv desktop/build/libs/Mindustry.jar desktop/build/libs/Mindustry-BE-Desktop-${RELEASE_VERSION}.jar
         mv server/build/libs/server-release.jar server/build/libs/Mindustry-BE-Server-${RELEASE_VERSION}.jar
-        mv android/build/outputs/apk/standard/release/android-standard-release.apk android/build/outputs/apk/standard/release/Mindustry-BE-Android-${RELEASE_VERSION}.apk
+        mv android/build/outputs/apk/release/android-release.apk android/build/outputs/apk/release/Mindustry-BE-Android-${RELEASE_VERSION}.apk
+        echo "JDK directory: $JDK_DIR"
+        ./gradlew desktop:dist -Pbuildversion=${RELEASE_VERSION} -Prelease -PversionModifier=steam -PversionType=bleeding-edge -PshowCommitHash desktop:packrLinux64 desktop:packrWindows64 desktop:packrMacOS --stacktrace
+        echo $PWD
+        ls deploy/
+    
+    - name: Deploy to Steam
+      uses: game-ci/steam-deploy@v3
+      with:
+        username: ${{ secrets.STEAM_USERNAME }}
+        configVdf: ${{ secrets.STEAM_CONFIG_VDF}}
+        appId: 1127400
+        buildDescription: Bleeding-Edge Build ${{ env.RELEASE_VERSION }}
+        rootPath: Mindustry/deploy
+        depot2Path: Windows64
+        depot3Path: Linux64
+        depot4Path: MacOS
+        releaseBranch: bleeding-edge
+    
     - name: Upload desktop artifacts
       uses: svenstaro/upload-release-action@v2
       with:
         repo_token: ${{ secrets.GITHUB_TOKEN }}
         file: Mindustry/desktop/build/libs/Mindustry-BE-Desktop-${{ env.RELEASE_VERSION }}.jar
         tag: ${{ github.ref }}
+        release_name: "Build ${{ env.RELEASE_VERSION }}"
+        body: ${{ env.BODY }}
     - name: Upload server artifacts
       uses: svenstaro/upload-release-action@v2
       with:
@@ -54,5 +90,21 @@ jobs:
       uses: svenstaro/upload-release-action@v2
       with:
         repo_token: ${{ secrets.GITHUB_TOKEN }}
-        file: Mindustry/android/build/outputs/apk/standard/release/Mindustry-BE-Android-${{ env.RELEASE_VERSION }}.apk
+        file: Mindustry/android/build/outputs/apk/release/Mindustry-BE-Android-${{ env.RELEASE_VERSION }}.apk
         tag: ${{ github.ref }}
+    - name: Upload latest version dependencies
+      uses: svenstaro/upload-release-action@v2
+      with:
+        repo_token: ${{ secrets.GITHUB_TOKEN }}
+        file: Mindustry/core/build/libs/core-release-deps.jar
+        tag: master
+        asset_name: latest.jar
+        overwrite: true
+    - name: Upload latest version assets
+      uses: svenstaro/upload-release-action@v2
+      with:
+        repo_token: ${{ secrets.GITHUB_TOKEN }}
+        file: Mindustry/core/build/libs/core-release-assets.jar
+        tag: master
+        asset_name: assets.jar
+        overwrite: true
